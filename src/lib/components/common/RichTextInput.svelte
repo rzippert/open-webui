@@ -454,8 +454,8 @@
 		if (text === '') {
 			editor.commands.clearContent();
 		} else {
-			// Regex to find serialized mention tags: <@id>, <#id>, <$id|label>
-			const mentionReG = /<([@#$])([\w.\-:/]+)(?:\|([^>]*))?>/g;
+			// Regex to find serialized mention tags: <@id>, <#id>, <$id|label>, <!id|label>
+			const mentionReG = /<([@#$!])([\w.\-:/?=&%~+]+)(?:\|([^>]*))?>/g;
 
 			// Convert each line to a <p>, replacing mention tags with proper
 			// TipTap mention spans that the editor's DOMParser will recognise.
@@ -469,7 +469,7 @@
 					const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 					// Now replace the escaped mention patterns back into real spans
 					const withMentions = escaped.replace(
-						/&lt;([@#$])([\w.\-:/]+)(?:\|([^&]*?))?&gt;/g,
+						/&lt;([@#$!])([\w.\-:/?=&%~+]+)(?:\|([^&]*?))?&gt;/g,
 						(_, ch, id, label) => {
 							const display = label?.length ? label : id;
 							return `<span class="mention" data-type="mention" data-id="${id}" data-label="${display}" data-mention-suggestion-char="${ch}">${ch}${display}</span>`;

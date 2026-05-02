@@ -2257,6 +2257,102 @@ def strip_skill_mentions(messages: list[dict]) -> None:
                         part['text'] = strip_re.sub(r'\1', text).strip()
 
 
+# <!serverId:uri|label> mention tags (frontend '!' command) and
+# {{MCP_RESOURCE:serverId:uri}} prompt variables — both reference an MCP
+# resource the user wants attached as context (app-driven, per MCP spec).
+# The id must look like 'serverId:uri' (word-char start, colon present) so
+# HTML comments ('<!-- ... -->') pasted into messages never match.
+MCP_RESOURCE_MENTION_RE = re.compile(r'<!(\w[\w.\-]*:[^|>\s][^|>]*?)(?:\|([^>]*))?>')
+MCP_RESOURCE_VARIABLE_RE = re.compile(r'{{\s*MCP_RESOURCE:([^}|]+?)\s*}}')
+
+
+def _parse_mcp_resource_ref(ref: str, decode: bool = False) -> Optional[dict]:
+    """Split 'serverId:uri' on the first colon into an mcp_resource item.
+
+    decode=True percent-decodes the uri — used for '!' mentions, whose uri is
+    percent-encoded by the frontend so spaces/special chars survive the mention
+    id character class. The {{MCP_RESOURCE:...}} variable path is typed raw and
+    must not be decoded.
+    """
+    server_id, _, uri = ref.partition(':')
+    server_id = server_id.strip()
+    uri = uri.strip()
+    if not server_id or not uri:
+        return None
+    if decode:
+        from urllib.parse import unquote
+
+        uri = unquote(uri)
+    # context=full: resources are always read whole, so a files handler pass
+    # with only mcp_resource items skips retrieval query generation.
+    return {
+        'type': 'mcp_resource',
+        'server_id': server_id,
+        'uri': uri,
+        'name': uri,
+        'context': 'full',
+    }
+
+
+def extract_mcp_resource_items_from_messages(messages: list[dict]) -> list[dict]:
+    """Extract MCP resource references cited in user messages.
+
+    Only user messages are scanned so model output cannot attach resources.
+    """
+    items = []
+    seen = set()
+    for message in messages:
+        if message.get('role') != 'user':
+            continue
+        for text in _get_text_parts(message):
+            # (ref, label, decode) — mentions are percent-encoded, variables raw
+            refs = [(m.group(1), m.group(2), True) for m in MCP_RESOURCE_MENTION_RE.finditer(text)]
+            refs += [(m.group(1), None, False) for m in MCP_RESOURCE_VARIABLE_RE.finditer(text)]
+            for ref, label, decode in refs:
+                item = _parse_mcp_resource_ref(ref, decode=decode)
+                if item and (item['server_id'], item['uri']) not in seen:
+                    seen.add((item['server_id'], item['uri']))
+                    if label:
+                        item['name'] = label
+                    items.append(item)
+    return items
+
+
+def strip_mcp_resource_mentions(messages: list[dict]) -> None:
+    """Replace MCP resource mention tags/variables with a plain reference in-place.
+
+    Mentions keep their label; {{MCP_RESOURCE:server:uri}} keeps the uri — so the
+    model still sees what the user cited, while the content arrives as a source.
+    """
+    variable_strip_re = re.compile(r'{{\s*MCP_RESOURCE:[^}|:]+:([^}|]+?)\s*}}')
+
+    def _mention_repl(m: re.Match) -> str:
+        # Keep the label when present, fall back to the (decoded) resource uri
+        if m.group(2):
+            return m.group(2)
+        from urllib.parse import unquote
+
+        return unquote(m.group(1).partition(':')[2])
+
+    def _strip(text: str) -> str:
+        text = MCP_RESOURCE_MENTION_RE.sub(_mention_repl, text)
+        return variable_strip_re.sub(r'\1', text)
+
+    for message in messages:
+        if message.get('role') != 'user':
+            continue
+        content = message.get('content')
+        if isinstance(content, str):
+            if MCP_RESOURCE_MENTION_RE.search(content) or variable_strip_re.search(content):
+                message['content'] = _strip(content).strip()
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get('type') == 'text':
+                    text = part.get('text', '')
+                    if MCP_RESOURCE_MENTION_RE.search(text) or variable_strip_re.search(text):
+                        part['text'] = _strip(text).strip()
+
+
 async def connect_mcp_server(
     request,
     server_id: str,
@@ -2661,6 +2757,18 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Strip <$skillId|label> mention tags so the model doesn't see raw markup.
     strip_skill_mentions(form_data.get('messages', []))
 
+    # MCP resource citations — <!serverId:uri|label> mentions ('!' command)
+    # and {{MCP_RESOURCE:serverId:uri}} prompt variables become attached
+    # mcp_resource items, read as sources by the files handler below.
+    mcp_resource_items = extract_mcp_resource_items_from_messages(form_data.get('messages', []))
+    if mcp_resource_items:
+        files = files or []
+        attached = {(f.get('server_id'), f.get('uri')) for f in files if f.get('type') == 'mcp_resource'}
+        files.extend(
+            item for item in mcp_resource_items if (item['server_id'], item['uri']) not in attached
+        )
+    strip_mcp_resource_mentions(form_data.get('messages', []))
+
     prompt = get_last_user_message(form_data['messages'])
 
     # Guard against empty user message after skill mention stripping.
@@ -2739,6 +2847,59 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
                         client, tool_specs = result
                         mcp_clients[server_id] = client
+
+                        # Add instructions to system message
+                        instructions = mcp_clients[server_id].get_instructions()
+                        if instructions:
+                            form_data["messages"] = add_or_update_system_message(
+                                f"MCP Server ({server_id}) Instructions:\n{instructions}",
+                                form_data["messages"],
+                                append=True,
+                            )
+
+                        # Add resource tools (passive data retrieval) — model-driven
+                        # fallback; the primary path is user-cited resources via the
+                        # '!' command or {{MCP_RESOURCE:...}} prompt variables.
+                        mcp_tools_dict[f"{server_id}_list_resources"] = {
+                            "spec": {
+                                "name": f"{server_id}_list_resources",
+                                "description": f"List available data resources (passive context) from MCP server: {server_id}. Use this to discover what data is available to read.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "cursor": {
+                                            "type": "string",
+                                            "description": "Optional cursor for pagination",
+                                        }
+                                    },
+                                },
+                            },
+                            "callable": mcp_clients[server_id].list_resources,
+                            "type": "mcp",
+                            "client": mcp_clients[server_id],
+                            "direct": False,
+                        }
+
+                        mcp_tools_dict[f"{server_id}_read_resource"] = {
+                            "spec": {
+                                "name": f"{server_id}_read_resource",
+                                "description": f"Read the content of a specific data resource (passive context) from MCP server: {server_id}. This does not perform any actions, it only retrieves data for reasoning.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "uri": {
+                                            "type": "string",
+                                            "description": "The URI of the resource to read",
+                                        }
+                                    },
+                                    "required": ["uri"],
+                                },
+                            },
+                            "callable": mcp_clients[server_id].read_resource,
+                            "type": "mcp",
+                            "client": mcp_clients[server_id],
+                            "direct": False,
+                        }
 
                         for tool_spec in tool_specs:
 

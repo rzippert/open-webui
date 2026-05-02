@@ -290,6 +290,118 @@ async def load_tool_from_url(request: Request, form_data: LoadUrlForm, user=Depe
 
 
 ############################
+# GetMCPServerResources
+############################
+
+
+@router.get('/mcp/{server_id}/resources', response_model=dict)
+async def get_mcp_server_resources(
+    request: Request,
+    server_id: str,
+    user=Depends(get_verified_user),
+):
+    """List resources and resource templates exposed by an MCP tool server
+    the user has access to.
+
+    Used by the frontend '!' command to let users attach MCP resources
+    as citable context items.
+    """
+    from open_webui.utils.middleware import connect_mcp_server
+
+    client = None
+    try:
+        result = await connect_mcp_server(request, server_id, user, {}, {})
+        if result is None:
+            # Not found and access denied are deliberately indistinguishable
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
+        client, _ = result
+
+        resources = []
+        try:
+            resources = await client.list_resources() or []
+        except Exception as e:
+            # Servers without resource support reply 'Method not found'
+            log.debug(f'list_resources unsupported on MCP server {server_id}: {e}')
+
+        templates = []
+        try:
+            templates = await client.list_resource_templates() or []
+        except Exception as e:
+            log.debug(f'list_resource_templates unsupported on MCP server {server_id}: {e}')
+
+        return {'resources': resources, 'templates': templates}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(f'Error listing resources from MCP server {server_id}: {e}')
+        raise HTTPException(status_code=500, detail=ERROR_MESSAGES.DEFAULT(e))
+    finally:
+        if client:
+            await client.disconnect()
+
+
+@router.get('/mcp/{server_id}/resources/complete', response_model=dict)
+async def complete_mcp_resource_argument(
+    request: Request,
+    server_id: str,
+    uri: str,
+    name: str,
+    value: str = '',
+    context: str = '',
+    user=Depends(get_verified_user),
+):
+    """Completion candidates for a resource template argument
+    (MCP completion/complete). Servers without completion support yield
+    an empty list — the frontend falls back to free typing.
+
+    `context` is a JSON object of already-resolved template arguments
+    (e.g. {"project": "Inbox"}) so the server can scope deeper completions.
+    """
+    import json
+
+    from open_webui.utils.middleware import connect_mcp_server
+
+    context_arguments = {}
+    if context:
+        try:
+            parsed = json.loads(context)
+            if isinstance(parsed, dict):
+                context_arguments = {str(k): str(v) for k, v in parsed.items()}
+        except (ValueError, TypeError):
+            context_arguments = {}
+
+    client = None
+    try:
+        result = await connect_mcp_server(request, server_id, user, {}, {})
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
+        client, _ = result
+        try:
+            values = await client.complete_resource(uri, name, value, context_arguments) or []
+        except Exception as e:
+            log.debug(f'completion unsupported on MCP server {server_id}: {e}')
+            values = []
+
+        return {'values': values}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(f'Error completing resource argument on MCP server {server_id}: {e}')
+        raise HTTPException(status_code=500, detail=ERROR_MESSAGES.DEFAULT(e))
+    finally:
+        if client:
+            await client.disconnect()
+
+
+############################
 # ExportTools
 ############################
 

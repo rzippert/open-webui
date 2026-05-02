@@ -56,7 +56,13 @@
 		extensions: [
 			mentionExtension({ triggerChar: '@' }),
 			mentionExtension({ triggerChar: '#' }),
-			mentionExtension({ triggerChar: '$' })
+			mentionExtension({ triggerChar: '$' }),
+			// MCP resource citations: id must look like 'serverId:uri' so HTML
+			// comments and doctype declarations never match
+			mentionExtension({
+				triggerChar: '!',
+				idPattern: '\\w[\\w.\\-]*:[\\w.\\-:/?=&%~+]+'
+			})
 		]
 	});
 
