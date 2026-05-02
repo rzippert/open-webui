@@ -1535,6 +1535,50 @@ async def get_sources_from_items(
                         else:
                             collection_names.append(item['id'])
 
+        elif item.get('type') == 'mcp_resource':
+            # MCP Resource Attached — app-driven context (MCP spec): the user
+            # cited a resource via the '!' command or a {{MCP_RESOURCE:...}}
+            # prompt variable; read its full content and expose it as a source.
+            # Lazy import: middleware imports this module at load time.
+            from open_webui.utils.middleware import connect_mcp_server
+
+            server_id = item.get('server_id')
+            uri = item.get('uri') or item.get('id')
+
+            if server_id and uri:
+                client = None
+                try:
+                    result = await connect_mcp_server(request, server_id, user, {}, {})
+                    if result is not None:
+                        client, _ = result
+                        resource_result = await client.read_resource(uri)
+
+                        documents = []
+                        metadatas = []
+                        for content in (resource_result or {}).get('contents', []):
+                            # Text contents only; binary blobs are skipped
+                            text = content.get('text', '')
+                            if text:
+                                documents.append(text)
+                                metadatas.append(
+                                    {
+                                        'file_id': uri,
+                                        'name': item.get('name', uri),
+                                        'source': f'mcp:{server_id}:{uri}',
+                                    }
+                                )
+
+                        if documents:
+                            query_result = {
+                                'documents': [documents],
+                                'metadatas': [metadatas],
+                            }
+                except Exception as e:
+                    log.exception(f'Error reading MCP resource {uri} from server {server_id}: {e}')
+                finally:
+                    if client:
+                        await client.disconnect()
+
         elif item.get('docs'):
             # BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL
             query_result = {

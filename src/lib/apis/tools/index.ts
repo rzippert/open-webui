@@ -96,6 +96,80 @@ export const getTools = async (token: string = '') => {
 	return res;
 };
 
+export const getMCPServerResources = async (token: string, serverId: string) => {
+	let error = null;
+
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/tools/mcp/${encodeURIComponent(serverId)}/resources`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'application/json',
+				authorization: `Bearer ${token}`
+			}
+		}
+	)
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const completeMCPResourceArgument = async (
+	token: string,
+	serverId: string,
+	uri: string,
+	name: string,
+	value: string = '',
+	context: Record<string, string> = {}
+) => {
+	let error = null;
+
+	const searchParams = new URLSearchParams({ uri, name, value });
+	if (context && Object.keys(context).length > 0) {
+		searchParams.set('context', JSON.stringify(context));
+	}
+
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/tools/mcp/${encodeURIComponent(serverId)}/resources/complete?${searchParams.toString()}`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'application/json',
+				authorization: `Bearer ${token}`
+			}
+		}
+	)
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
 export const getToolList = async (token: string = '') => {
 	let error = null;
 
