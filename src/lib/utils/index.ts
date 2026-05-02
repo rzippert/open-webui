@@ -1669,6 +1669,10 @@ export const extractInputVariables = (text: string): Record<string, any> => {
 	// Then, extract regular variables (without pipe) - only if not already processed
 	while ((match = regularRegex.exec(text)) !== null) {
 		const varName = match[1].trim();
+		// MCP resource references are resolved server-side, not user inputs
+		if (varName.startsWith('MCP_RESOURCE:')) {
+			continue;
+		}
 		// Only add if not already processed as custom variable
 		if (!variables.hasOwnProperty(varName)) {
 			variables[varName] = { type: 'text' }; // Default type for regular variables

@@ -59,6 +59,7 @@ def create_insecure_httpx_client(headers=None, timeout=None, auth=None):
 class MCPClient:
     def __init__(self):
         self.session: Optional[ClientSession] = None
+        self.initialize_result = None
         self.exit_stack = None
 
     async def connect(self, url: str, headers: Optional[dict] = None):
@@ -79,11 +80,16 @@ class MCPClient:
 
                 self.session = await exit_stack.enter_async_context(self._session_context)
                 with anyio.fail_after(MCP_INITIALIZE_TIMEOUT):
-                    await self.session.initialize()
+                    self.initialize_result = await self.session.initialize()
                 self.exit_stack = exit_stack.pop_all()
             except Exception as e:
                 await self.disconnect()
                 raise e
+
+    def get_instructions(self) -> Optional[str]:
+        if not self.initialize_result:
+            return None
+        return getattr(self.initialize_result, 'instructions', None)
 
     async def list_tool_specs(self) -> Optional[dict]:
         if not self.session:
@@ -130,7 +136,7 @@ class MCPClient:
         if not result:
             raise Exception('No result returned from MCP list_resources call.')
 
-        result_dict = result.model_dump()
+        result_dict = result.model_dump(mode='json')
         resources = result_dict.get('resources', [])
 
         return resources
@@ -142,9 +148,49 @@ class MCPClient:
         result = await self.session.read_resource(uri)
         if not result:
             raise Exception('No result returned from MCP read_resource call.')
-        result_dict = result.model_dump()
+        result_dict = result.model_dump(mode='json')
 
         return result_dict
+
+    async def list_resource_templates(self, cursor: Optional[str] = None) -> Optional[list]:
+        if not self.session:
+            raise RuntimeError('MCP client is not connected.')
+
+        result = await self.session.list_resource_templates(cursor=cursor)
+        if not result:
+            raise Exception('No result returned from MCP list_resource_templates call.')
+
+        result_dict = result.model_dump(mode='json')
+        return result_dict.get('resourceTemplates', [])
+
+    async def complete_resource(
+        self,
+        uri_template: str,
+        name: str,
+        value: str,
+        context_arguments: Optional[dict] = None,
+    ) -> Optional[list]:
+        """Ask the server for completion candidates for a resource template
+        argument (MCP completion/complete).
+
+        context_arguments carries already-resolved template arguments so the
+        server can scope completions (e.g. tasks within a chosen project).
+        """
+        if not self.session:
+            raise RuntimeError('MCP client is not connected.')
+
+        from mcp import types
+
+        result = await self.session.complete(
+            types.ResourceTemplateReference(type='ref/resource', uri=uri_template),
+            {'name': name, 'value': value},
+            context_arguments=context_arguments or None,
+        )
+        if not result:
+            return []
+
+        result_dict = result.model_dump(mode='json')
+        return result_dict.get('completion', {}).get('values', [])
 
     async def disconnect(self):
         """Clean up and close the session.

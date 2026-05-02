@@ -3,6 +3,7 @@ type MentionOptions = {
 	triggerChar?: string; // default "@"
 	className?: string; // default "mention"
 	extraAttrs?: Record<string, string>; // additional HTML attrs
+	idPattern?: string; // regex source for the mention id (default "[\\w.\\-:/]+")
 };
 
 function escapeHtml(s: string) {
@@ -40,7 +41,8 @@ export function mentionExtension(opts: MentionOptions = {}) {
 	// Compile the regex once when the extension is created, not on every tokenizer call.
 	// mentionStart fires on every '<' in the document, making the tokenizer a hot path.
 	const trigger = opts.triggerChar ?? '@';
-	const re = new RegExp(`^<\\${trigger}([\\w.\\-:/]+)(?:\\|([^>]*))?>`);
+	const idPattern = opts.idPattern ?? '[\\w.\\-:/]+';
+	const re = new RegExp(`^<\\${trigger}(${idPattern})(?:\\|([^>]*))?>`);
 	const snapshot: MentionOptions = {
 		triggerChar: trigger,
 		className: opts.className,

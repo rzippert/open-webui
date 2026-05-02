@@ -3,6 +3,7 @@
 	import AtCommands from './Commands/AtCommands.svelte';
 	import Knowledge from './Commands/Knowledge.svelte';
 	import Skills from './Commands/Skills.svelte';
+	import Resources from './Commands/Resources.svelte';
 	import Emojis from './Commands/Emojis.svelte';
 	import DropdownMenu from '$lib/components/common/DropdownMenu.svelte';
 
@@ -189,6 +190,39 @@
 
 							onSelect({
 								type: 'skill',
+								data: data
+							});
+						}
+					}}
+				/>
+			{:else if char === '!'}
+				<Resources
+					bind:this={suggestionElement}
+					{query}
+					bind:filteredItems
+					onSelect={(e) => {
+						const { type, data } = e;
+
+						if (type === 'resource') {
+							// The label is the resource URI ('!vik://projects/19' style);
+							// sanitized so it cannot break the <!id|label> serialization
+							const label = (data.uri || data.name).replace(/[|<>]/g, ' ').trim();
+
+							// Percent-encode the URI so resources with spaces or other
+							// special chars (e.g. task names) survive the mention's
+							// id character class. The backend decodes it before reading.
+							const encodedUri = encodeURIComponent(data.uri).replace(
+								/[!'()*]/g,
+								(c) => '%' + c.charCodeAt(0).toString(16).toUpperCase()
+							);
+
+							command({
+								id: `${data.server_id}:${encodedUri}|${label}`,
+								label: label
+							});
+
+							onSelect({
+								type: 'resource',
 								data: data
 							});
 						}
